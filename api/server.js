@@ -289,6 +289,60 @@ app.post('/api/projects/:projectId/tasks', authenticateToken, async (req, res) =
   }
 });
 
+// Update task (humans)
+app.put('/api/tasks/:taskId', authenticateToken, async (req, res) => {
+  const { title, description, assigned_to, priority, status } = req.body;
+  const taskId = req.params.taskId;
+  
+  try {
+    // Get current task
+    const currentTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [taskId]);
+    if (!currentTask) return res.status(404).json({ error: 'Task not found' });
+    
+    // Build update query dynamically
+    const updates = [];
+    const params = [];
+    
+    if (title !== undefined) { updates.push('title = ?'); params.push(title); }
+    if (description !== undefined) { updates.push('description = ?'); params.push(description); }
+    if (assigned_to !== undefined) { updates.push('assigned_to = ?'); params.push(assigned_to); }
+    if (priority !== undefined) { updates.push('priority = ?'); params.push(priority); }
+    if (status !== undefined) { updates.push('status = ?'); params.push(status); }
+    
+    if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+    
+    params.push(taskId);
+    
+    await dbRun(
+      `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`,
+      params
+    );
+    
+    // If assigned_to changed, send webhook to new agent
+    if (assigned_to !== undefined && assigned_to !== currentTask.assigned_to) {
+      const agent = await dbGet('SELECT * FROM agents WHERE id = ?', [assigned_to]);
+      if (agent && agent.endpoint_url) {
+        const task = await dbGet('SELECT t.*, p.slug as project_slug FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = ?', [taskId]);
+        fetch(agent.endpoint_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event: 'task.assigned',
+            task: { ...task, project: { id: task.project_id, slug: task.project_slug } },
+            agent: { name: agent.name, handle: agent.handle }
+          })
+        }).catch(err => console.log('Webhook failed:', err.message));
+      }
+    }
+    
+    const updatedTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [taskId]);
+    res.json(updatedTask);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to update task' });
+  }
+});
+
 // Update task status (agents only to 'respondido')
 app.put('/api/tasks/:taskId/status', authenticateAgent, async (req, res) => {
   const { status } = req.body;
@@ -309,18 +363,96 @@ app.put('/api/tasks/:taskId/status', authenticateAgent, async (req, res) => {
   }
 });
 
-// Add comment (agents)
-app.post('/api/tasks/:taskId/comments', authenticateAgent, async (req, res) => {
-  const { content, attachments } = req.body;
+// Get comments for a task (humans or agents)
+app.get('/api/tasks/:taskId/comments', authenticateToken, async (req, res) => {
+  try {
+    const comments = await dbAll(
+      `SELECT c.*, 
+        CASE WHEN c.author_type = 'human' THEN u.name ELSE a.name END as author_name,
+        CASE WHEN c.author_type = 'human' THEN NULL ELSE a.emoji END as author_emoji,
+        CASE WHEN c.author_type = 'human' THEN NULL ELSE a.handle END as author_handle
+       FROM comments c
+       LEFT JOIN users u ON c.author_type = 'human' AND c.author_id = u.id
+       LEFT JOIN agents a ON c.author_type = 'agent' AND c.author_id = a.id
+       WHERE c.task_id = ?
+       ORDER BY c.created_at ASC`,
+      [req.params.taskId]
+    );
+    res.json(comments.map(c => ({
+      ...c,
+      attachments: c.attachments ? JSON.parse(c.attachments) : []
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to fetch comments' });
+  }
+});
+
+// Helper: Check for @mentions and notify agents
+async function checkAndNotifyMentions(taskId, content) {
+  const mentions = content.match(/@(\w+)/g);
+  if (!mentions) return;
+  
+  for (const mention of mentions) {
+    const handle = mention.toLowerCase();
+    try {
+      const agent = await dbGet('SELECT * FROM agents WHERE LOWER(handle) = ?', [handle]);
+      if (agent && agent.endpoint_url) {
+        // Get task info for the webhook
+        const task = await dbGet('SELECT t.*, p.slug as project_slug FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = ?', [taskId]);
+        if (task) {
+          fetch(agent.endpoint_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              event: 'comment.mention',
+              task: { ...task, project: { id: task.project_id, slug: task.project_slug } },
+              agent: { name: agent.name, handle: agent.handle },
+              mention: { handle: mention }
+            })
+          }).catch(err => console.log('Mention webhook failed:', err.message));
+        }
+      }
+    } catch (err) {
+      console.error('Error checking mention:', err);
+    }
+  }
+}
+
+// Add comment (humans)
+app.post('/api/tasks/:taskId/comments', authenticateToken, async (req, res) => {
+  const { content, parent_id, attachments } = req.body;
   const id = crypto.randomUUID();
   
   try {
     await dbRun(
-      'INSERT INTO comments (id, task_id, author_type, author_id, content, attachments) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, req.params.taskId, 'agent', req.agent.id, content, JSON.stringify(attachments || [])]
+      'INSERT INTO comments (id, task_id, parent_id, author_type, author_id, content, attachments) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, req.params.taskId, parent_id || null, 'human', req.user.id, content, JSON.stringify(attachments || [])]
     );
     const comment = await dbGet('SELECT * FROM comments WHERE id = ?', [id]);
-    res.status(201).json(comment);
+    
+    // Check for @mentions and notify agents
+    checkAndNotifyMentions(req.params.taskId, content);
+    
+    res.status(201).json({ ...comment, attachments: comment.attachments ? JSON.parse(comment.attachments) : [] });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to add comment' });
+  }
+});
+
+// Add comment (agents) - separate endpoint
+app.post('/api/agents/tasks/:taskId/comments', authenticateAgent, async (req, res) => {
+  const { content, parent_id, attachments } = req.body;
+  const id = crypto.randomUUID();
+  
+  try {
+    await dbRun(
+      'INSERT INTO comments (id, task_id, parent_id, author_type, author_id, content, attachments) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, req.params.taskId, parent_id || null, 'agent', req.agent.id, content, JSON.stringify(attachments || [])]
+    );
+    const comment = await dbGet('SELECT * FROM comments WHERE id = ?', [id]);
+    res.status(201).json({ ...comment, attachments: comment.attachments ? JSON.parse(comment.attachments) : [] });
   } catch (err) {
     res.status(500).json({ error: 'Failed to add comment' });
   }
