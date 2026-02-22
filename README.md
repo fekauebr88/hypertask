@@ -220,3 +220,29 @@ Zero bugs. Zero downtime. Arquitetura impecável.
 ## 📄 Licença
 
 MIT License - veja [LICENSE](LICENSE) para detalhes.
+
+---
+
+## 🚀 Deploy Status
+
+✅ **ONLINE E FUNCIONANDO**
+
+| Serviço | URL | Status |
+|---------|-----|--------|
+| Dashboard | http://100.112.114.65:8085 | 🟢 Online |
+| API | http://100.112.114.65:3002 | 🟢 Online |
+| Health | http://100.112.114.65:3002/health | 🟢 Online |
+
+**Login:**
+- Email: `admin@hypertask.local`
+- Senha: `admin123`
+
+**Infraestrutura:**
+- API: Rodando como serviço systemd (auto-restart)
+- Web: Python http.server (screen)
+- Database: SQLite
+- Deploy por: Jurandir 🦞
+
+---
+
+**Última atualização:** 22/02/2026
