@@ -40,7 +40,7 @@
     
     <script>
         const API_URL = window.location.hostname === 'localhost' 
-            ? 'http://localhost:3002' 
+            ? 'http://100.112.114.65:3002' 
             : 'http://100.112.114.65:3002';
         
         let token = localStorage.getItem('hypertask_token');
@@ -298,7 +298,7 @@
                                     </button>
                                 </div>
                             ` : tasks.map(t => `
-                                <div class="glass glow rounded-xl p-4 border border-cyber-border status-${t.status}">
+                                <div class="glass glow rounded-xl p-4 border border-cyber-border status-${t.status}" id="task-${t.id}">
                                     <div class="flex items-start justify-between">
                                         <div class="flex-1">
                                             <div class="flex items-center gap-2 mb-2">
@@ -322,6 +322,27 @@
                                                     <span class="text-sm text-cyber-primary">${t.assigned_handle}</span>
                                                 </div>
                                             ` : ''}
+                                            
+                                            <button onclick="toggleComments('${t.id}')" 
+                                                class="mt-3 text-sm text-cyber-primary hover:underline">
+                                                💬 Ver comentários
+                                            </button>
+                                            
+                                            <div id="comments-${t.id}" class="hidden mt-4 border-t border-cyber-border pt-4">
+                                                <div id="comments-list-${t.id}" class="space-y-3 mb-4">
+                                                    <p class="text-gray-500 text-sm">Carregando...</p>
+                                                </div>
+                                                <div class="flex gap-2">
+                                                    <input type="text" id="comment-input-${t.id}" 
+                                                        placeholder="Adicionar comentário..."
+                                                        class="flex-1 bg-cyber-dark border border-cyber-border rounded-lg px-3 py-2 text-sm text-white focus:border-cyber-primary focus:outline-none">
+                                                    <button onclick="submitComment('${t.id}')" 
+                                                        class="bg-cyber-primary text-cyber-dark px-4 py-2 rounded-lg text-sm font-semibold">
+                                                        Enviar
+                                                    </button>
+                                                </div>
+                                                <div id="reply-to-${t.id}" class="text-xs text-gray-400 mt-1 hidden"></div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -467,6 +488,106 @@
             localStorage.removeItem('hypertask_token');
             window.location.hash = '#/';
             render();
+        }
+
+        // Comments Module
+        async function loadComments(taskId) {
+            try {
+                const res = await fetch(`${API_URL}/api/tasks/${taskId}/comments`, {
+                    headers: { 'Authorization': `Bearer ${token}` }
+                });
+                if (!res.ok) throw new Error('Failed to load comments');
+                return await res.json();
+            } catch (err) {
+                console.error('Error loading comments:', err);
+                return [];
+            }
+        }
+
+        async function addComment(taskId, content, parentId = null) {
+            try {
+                const res = await fetch(`${API_URL}/api/tasks/${taskId}/comments`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ content, parent_id: parentId, attachments: [] })
+                });
+                if (!res.ok) throw new Error('Failed to add comment');
+                return await res.json();
+            } catch (err) {
+                console.error('Error adding comment:', err);
+                alert('Erro ao adicionar comentário');
+            }
+        }
+
+        let currentReplyTo = {};
+
+        function replyToComment(taskId, commentId) {
+            currentReplyTo[taskId] = commentId;
+            const replyDiv = document.getElementById(`reply-to-${taskId}`);
+            if (replyDiv) {
+                replyDiv.textContent = `Respondendo...`;
+                replyDiv.classList.remove('hidden');
+            }
+        }
+
+        async function toggleComments(taskId) {
+            const commentsDiv = document.getElementById(`comments-${taskId}`);
+            if (!commentsDiv) return;
+            
+            if (commentsDiv.classList.contains('hidden')) {
+                commentsDiv.classList.remove('hidden');
+                await loadAndRenderComments(taskId);
+            } else {
+                commentsDiv.classList.add('hidden');
+            }
+        }
+
+        async function loadAndRenderComments(taskId) {
+            const commentsList = document.getElementById(`comments-list-${taskId}`);
+            if (!commentsList) return;
+            
+            const comments = await loadComments(taskId);
+            
+            if (comments.length === 0) {
+                commentsList.innerHTML = '<p class="text-gray-500 text-sm">Nenhum comentário ainda. Seja o primeiro!</p>';
+                return;
+            }
+            
+            commentsList.innerHTML = comments.map(c => `
+                <div class="glass rounded-lg p-3 ${c.parent_id ? 'ml-8 border-l-2 border-cyber-primary' : ''}">
+                    <div class="flex items-center gap-2 mb-2">
+                        <span class="text-lg">${c.author_type === 'agent' ? (c.author_emoji || '🤖') : '👤'}</span>
+                        <span class="font-medium text-sm">${c.author_name || 'Unknown'}</span>
+                        ${c.author_type === 'agent' ? `<span class="text-xs text-cyber-primary">${c.author_handle}</span>` : ''}
+                        <span class="text-xs text-gray-500 ml-auto">${new Date(c.created_at).toLocaleString()}</span>
+                    </div>
+                    <p class="text-sm text-gray-300">${c.content}</p>
+                    <button onclick="replyToComment('${taskId}', '${c.id}')" 
+                        class="text-xs text-cyber-primary mt-2 hover:underline">Responder</button>
+                </div>
+            `).join('');
+        }
+
+        async function submitComment(taskId) {
+            const input = document.getElementById(`comment-input-${taskId}`);
+            const content = input.value.trim();
+            if (!content) return;
+            
+            const parentId = currentReplyTo[taskId] || null;
+            await addComment(taskId, content, parentId);
+            
+            input.value = '';
+            currentReplyTo[taskId] = null;
+            const replyDiv = document.getElementById(`reply-to-${taskId}`);
+            if (replyDiv) {
+                replyDiv.classList.add('hidden');
+            }
+            
+            // Recarregar comentários
+            await loadAndRenderComments(taskId);
         }
 
         // Init
