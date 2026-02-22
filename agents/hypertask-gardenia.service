@@ -1,0 +1,15 @@
+[Unit]
+Description=HyperTask Agent - Gardenia (@gardenia)
+After=network.target hypertask-api.service
+
+[Service]
+Type=simple
+User=docker
+WorkingDirectory=/home/docker/projects/hypertask/agents
+ExecStart=/usr/bin/python3 /home/docker/projects/hypertask/agents/gardenia_agent.py
+Restart=always
+RestartSec=2
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
