@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HyperTask - Gestão de Tarefas com AI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        cyber: {
+                            dark: '#0a0a0f',
+                            card: '#12121a',
+                            border: '#1e1e2e',
+                            primary: '#00d4ff',
+                            secondary: '#7c3aed',
+                            success: '#10b981',
+                            warning: '#f59e0b',
+                            danger: '#ef4444'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #0a0a0f; color: #e2e8f0; }
+        .glass { background: rgba(18, 18, 26, 0.8); backdrop-filter: blur(10px); }
+        .glow { box-shadow: 0 0 20px rgba(0, 212, 255, 0.1); }
+        .status-nao_iniciada { border-left: 3px solid #6b7280; }
+        .status-na_fila { border-left: 3px solid #f59e0b; }
+        .status-respondido { border-left: 3px solid #00d4ff; }
+        .status-finalizada { border-left: 3px solid #10b981; }
+    </style>
+</head>
+<body class="min-h-screen">
+    <div id="app"></div>
+    
+    <script>
+        const API_URL = window.location.hostname === 'localhost' 
+            ? 'http://localhost:3002' 
+            : 'http://100.112.114.65:3002';
+        
+        let token = localStorage.getItem('hypertask_token');
+        let currentUser = null;
+
+        // Router
+        function render() {
+            const app = document.getElementById('app');
+            
+            if (!token) {
+                app.innerHTML = renderLogin();
+                return;
+            }
+            
+            const hash = window.location.hash || '#/';
+            
+            if (hash === '#/') {
+                renderDashboard();
+            } else if (hash.startsWith('#/project/')) {
+                const projectId = hash.split('/')[2];
+                renderProject(projectId);
+            } else {
+                renderDashboard();
+            }
+        }
+
+        function renderLogin() {
+            return `
+                <div class="min-h-screen flex items-center justify-center p-4">
+                    <div class="glass glow rounded-2xl p-8 w-full max-w-md border border-cyber-border">
+                        <div class="text-center mb-8">
+                            <div class="text-5xl mb-4">🚀</div>
+                            <h1 class="text-3xl font-bold text-cyber-primary">HyperTask</h1>
+                            <p class="text-gray-400 mt-2">Gestão de Tarefas com AI</p>
+                        </div>
+                        
+                        <form onsubmit="handleLogin(event)" class="space-y-4">
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Email</label>
+                                <input type="email" id="email" required
+                                    class="w-full bg-cyber-dark border border-cyber-border rounded-lg px-4 py-3 text-white focus:border-cyber-primary focus:outline-none"
+                                    placeholder="admin@hypertask.local">
+                            </div>
+                            
+                            <div>
+                                <label class="block text-sm text-gray-400 mb-1">Senha</label>
+                                <input type="password" id="password" required
+                                    class="w-full bg-cyber-dark border border-cyber-border rounded-lg px-4 py-3 text-white focus:border-cyber-primary focus:outline-none"
+                                    placeholder="••••••••">
+                            </div>
+                            
+                            <button type="submit" 
+                                class="w-full bg-gradient-to-r from-cyber-primary to-cyber-secondary text-white font-semibold py-3 rounded-lg hover:opacity-90 transition">
+                                Entrar
+                            </button>
+                        </form>
+                        
+                        <div id="login-error" class="mt-4 text-cyber-danger text-sm text-center hidden"></div>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const email = document.getElementById('email').value;
+            const password = document.getElementById('password').value;
+            
+            try {
+                const res = await fetch(`${API_URL}/api/auth/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email, password })
+                });
+                
+                const data = await res.json();
+                
+                if (res.ok) {
+                    token = data.token;
+                    currentUser = data.user;
+                    localStorage.setItem('hypertask_token', token);
+                    window.location.hash = '#/';
+                    render();
+                } else {
+                    document.getElementById('login-error').textContent = data.error || 'Login failed';
+                    document.getElementById('login-error').classList.remove('hidden');
+                }
+            } catch (err) {
+                document.getElementById('login-error').textContent = 'Server error';
+                document.getElementById('login-error').classList.remove('hidden');
+            }
+        }
+
+        async function renderDashboard() {
+            const app = document.getElementById('app');
+            
+            try {
+                const [projectsRes, agentsRes] = await Promise.all([
+                    fetch(`${API_URL}/api/projects`, { headers: { 'Authorization': `Bearer ${token}` } }),
+                    fetch(`${API_URL}/api/agents`, { headers: { 'Authorization': `Bearer ${token}` } })
+                ]);
+                
+                const projects = projectsRes.ok ? await projectsRes.json() : [];
+                const agents = agentsRes.ok ? await agentsRes.json() : [];
+                
+                app.innerHTML = `
+                    ${renderHeader()}
+                    
+                    <main class="p-6">
+                        <!-- Stats -->
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                            <div class="glass glow rounded-xl p-4 border border-cyber-border">
+                                <div class="text-gray-400 text-sm">Projetos</div>
+                                <div class="text-2xl font-bold text-cyber-primary">${projects.length}</div>
+                            </div>
+                            <div class="glass glow rounded-xl p-4 border border-cyber-border">
+                                <div class="text-gray-400 text-sm">Agents</div>
+                                <div class="text-2xl font-bold text-cyber-secondary">${agents.length}</div>
+                            </div>
+                            <div class="glass glow rounded-xl p-4 border border-cyber-border">
+                                <div class="text-gray-400 text-sm">Na Fila</div>
+                                <div class="text-2xl font-bold text-cyber-warning">0</div>
+                            </div>
+                            <div class="glass glow rounded-xl p-4 border border-cyber-border">
+                                <div class="text-gray-400 text-sm">Respondidos</div>
+                                <div class="text-2xl font-bold text-cyber-success">0</div>
+                            </div>
+                        </div>
+                        
+                        <!-- Projects -->
+                        <div class="mb-8">
+                            <div class="flex items-center justify-between mb-4">
+                                <h2 class="text-xl font-bold">Projetos</h2>
+                                <button onclick="showNewProjectModal()" 
+                                    class="bg-cyber-primary text-cyber-dark px-4 py-2 rounded-lg font-semibold hover:opacity-90">
+                                    + Novo Projeto
+                                </button>
+                            </div>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                                ${projects.map(p => `
+                                    <a href="#/project/${p.id}" 
+                                        class="glass glow rounded-xl p-6 border border-cyber-border hover:border-cyber-primary transition block">
+                                        <div class="flex items-center gap-3 mb-3">
+                                            <span class="text-2xl">${p.emoji || '📁'}</span>
+                                            <h3 class="font-semibold text-lg">${p.name}</h3>
+                                        </div>
+                                        <p class="text-gray-400 text-sm mb-3">${p.description || 'Sem descrição'}</p>
+                                        <div class="flex items-center gap-2">
+                                            <span class="w-3 h-3 rounded-full" style="background: ${p.color || '#00d4ff'}"></span>
+                                            <span class="text-xs text-gray-500">${p.slug}</span>
+                                        </div>
+                                    </a>
+                                `).join('')}
+                            </div>
+                        </div>
+                        
+                        <!-- Agents -->
+                        <div>
+                            <h2 class="text-xl font-bold mb-4">Agents OpenClaw</h2>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                ${agents.map(a => `
+                                    <div class="glass rounded-xl p-4 border border-cyber-border">
+                                        <div class="flex items-center gap-3">
+                                            <span class="text-3xl">${a.emoji}</span>
+                                            <div>
+                                                <div class="font-semibold">${a.name}</div>
+                                                <div class="text-sm text-gray-400">${a.handle}</div>
+                                            </div>
+                                            <span class="ml-auto w-2 h-2 rounded-full ${a.status === 'online' ? 'bg-green-500' : 'bg-gray-500'}"></span>
+                                        </div>
+                                        <div class="mt-3 flex flex-wrap gap-1">
+                                            ${(a.skills || []).map(s => `
+                                                <span class="text-xs bg-cyber-dark px-2 py-1 rounded">${s}</span>
+                                            `).join('')}
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    </main>
+                `;
+            } catch (err) {
+                console.error(err);
+                app.innerHTML = renderHeader() + `
+                    <main class="p-6">
+                        <div class="text-center text-gray-400">
+                            <p>Erro ao carregar dados. Tente novamente.</p>
+                            <button onclick="render()" class="mt-4 text-cyber-primary">Recarregar</button>
+                        </div>
+                    </main>
+                `;
+            }
+        }
+
+        async function renderProject(projectId) {
+            const app = document.getElementById('app');
+            
+            try {
+                const [projectRes, tasksRes, agentsRes] = await Promise.all([
+                    fetch(`${API_URL}/api/projects`, { headers: { 'Authorization': `Bearer ${token}` } }),
+                    fetch(`${API_URL}/api/projects/${projectId}/tasks`, { headers: { 'Authorization': `Bearer ${token}` } }),
+                    fetch(`${API_URL}/api/agents`, { headers: { 'Authorization': `Bearer ${token}` } })
+                ]);
+                
+                const projects = projectRes.ok ? await projectRes.json() : [];
+                const project = projects.find(p => p.id === projectId);
+                const tasks = tasksRes.ok ? await tasksRes.json() : [];
+                const agents = agentsRes.ok ? await agentsRes.json() : [];
+                
+                const statusLabels = {
+                    'nao_iniciada': 'Não Iniciada',
+                    'na_fila': 'Na Fila',
+                    'respondido': 'Respondido',
+                    'finalizada': 'Finalizada'
+                };
+                
+                const statusColors = {
+                    'nao_iniciada': 'text-gray-400',
+                    'na_fila': 'text-cyber-warning',
+                    'respondido': 'text-cyber-primary',
+                    'finalizada': 'text-cyber-success'
+                };
+                
+                app.innerHTML = `
+                    ${renderHeader()}
+                    
+                    <main class="p-6">
+                        <div class="mb-6">
+                            <a href="#/" class="text-gray-400 hover:text-white">← Voltar</a>
+                        </div>
+                        
+                        <div class="flex items-center justify-between mb-6">
+                            <div class="flex items-center gap-3">
+                                <span class="text-3xl">${project?.emoji || '📁'}</span>
+                                <div>
+                                    <h1 class="text-2xl font-bold">${project?.name || 'Projeto'}</h1>
+                                    <p class="text-gray-400">${project?.description || ''}</p>
+                                </div>
+                            </div>
+                            <button onclick="showNewTaskModal('${projectId}')" 
+                                class="bg-cyber-primary text-cyber-dark px-4 py-2 rounded-lg font-semibold">
+                                + Nova Tarefa
+                            </button>
+                        </div>
+                        
+                        <!-- Tasks -->
+                        <div class="space-y-3">
+                            ${tasks.length === 0 ? `
+                                <div class="text-center text-gray-400 py-12">
+                                    <p>Nenhuma tarefa ainda.</p>
+                                    <button onclick="showNewTaskModal('${projectId}')" 
+                                        class="mt-4 text-cyber-primary hover:underline">
+                                        Criar primeira tarefa
+                                    </button>
+                                </div>
+                            ` : tasks.map(t => `
+                                <div class="glass glow rounded-xl p-4 border border-cyber-border status-${t.status}">
+                                    <div class="flex items-start justify-between">
+                                        <div class="flex-1">
+                                            <div class="flex items-center gap-2 mb-2">
+                                                <span class="text-sm font-mono text-gray-500">${t.identifier}</span>
+                                                <span class="text-xs px-2 py-1 rounded ${statusColors[t.status]} bg-cyber-dark">
+                                                    ${statusLabels[t.status]}
+                                                </span>
+                                                ${t.priority === 'high' || t.priority === 'urgent' ? `
+                                                    <span class="text-xs px-2 py-1 rounded text-cyber-danger bg-cyber-dark">
+                                                        ${t.priority}
+                                                    </span>
+                                                ` : ''}
+                                            </div>
+                                            <h3 class="font-semibold text-lg mb-1">${t.title}</h3>
+                                            <p class="text-gray-400 text-sm">${t.description || ''}</p>
+                                            
+                                            ${t.assigned_to ? `
+                                                <div class="mt-3 flex items-center gap-2">
+                                                    <span class="text-sm">Atribuído a:</span>
+                                                    <span class="text-lg">${t.assigned_emoji}</span>
+                                                    <span class="text-sm text-cyber-primary">${t.assigned_handle}</span>
+                                                </div>
+                                            ` : ''}
+                                        </div>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </main>
+                    
+                    <!-- New Task Modal -->
+                    <div id="new-task-modal" class="fixed inset-0 bg-black/50 hidden items-center justify-center p-4">
+                        <div class="glass glow rounded-2xl p-6 w-full max-w-lg border border-cyber-border">
+                            <h2 class="text-xl font-bold mb-4">Nova Tarefa</h2>
+                            <form onsubmit="handleNewTask(event, '${projectId}')" class="space-y-4">
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">Título</label>
+                                    <input type="text" id="task-title" required
+                                        class="w-full bg-cyber-dark border border-cyber-border rounded-lg px-4 py-2 text-white focus:border-cyber-primary focus:outline-none">
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">Descrição</label>
+                                    <textarea id="task-description" rows="3"
+                                        class="w-full bg-cyber-dark border border-cyber-border rounded-lg px-4 py-2 text-white focus:border-cyber-primary focus:outline-none"></textarea>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">Atribuir a</label>
+                                    <select id="task-agent" 
+                                        class="w-full bg-cyber-dark border border-cyber-border rounded-lg px-4 py-2 text-white focus:border-cyber-primary focus:outline-none">
+                                        <option value="">Ninguém (Não Iniciada)</option>
+                                        ${agents.map(a => `
+                                            <option value="${a.id}">${a.emoji} ${a.name} (${a.handle})</option>
+                                        `).join('')}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm text-gray-400 mb-1">Prioridade</label>
+                                    <select id="task-priority"
+                                        class="w-full bg-cyber-dark border border-cyber-border rounded-lg px-4 py-2 text-white focus:border-cyber-primary focus:outline-none">
+                                        <option value="low">Baixa</option>
+                                        <option value="medium" selected>Média</option>
+                                        <option value="high">Alta</option>
+                                        <option value="urgent">Urgente</option>
+                                    </select>
+                                </div>
+                                <div class="flex gap-3 mt-6">
+                                    <button type="button" onclick="closeNewTaskModal()" 
+                                        class="flex-1 bg-cyber-dark border border-cyber-border text-white py-2 rounded-lg hover:bg-cyber-border">
+                                        Cancelar
+                                    </button>
+                                    <button type="submit" 
+                                        class="flex-1 bg-cyber-primary text-cyber-dark py-2 rounded-lg font-semibold">
+                                        Criar
+                                    </button>
+                                </div>
+                            </form>
+                        </div>
+                    </div>
+                `;
+            } catch (err) {
+                console.error(err);
+                app.innerHTML = renderHeader() + '<main class="p-6"><p class="text-gray-400">Erro ao carregar projeto</p></main>';
+            }
+        }
+
+        function renderHeader() {
+            return `
+                <header class="glass border-b border-cyber-border">
+                    <div class="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
+                        <a href="#/" class="flex items-center gap-3">
+                            <span class="text-2xl">🚀</span>
+                            <span class="text-xl font-bold">Hyper<span class="text-cyber-primary">Task</span></span>
+                        </a>
+                        <div class="flex items-center gap-4">
+                            <span class="text-sm text-gray-400">${currentUser?.name || ''}</span>
+                            <button onclick="logout()" class="text-sm text-gray-400 hover:text-white">
+                                Sair
+                            </button>
+                        </div>
+                    </div>
+                </header>
+            `;
+        }
+
+        function showNewProjectModal() {
+            const name = prompt('Nome do projeto:');
+            if (!name) return;
+            
+            const slug = name.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '');
+            const description = prompt('Descrição:') || '';
+            
+            fetch(`${API_URL}/api/projects`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({ name, slug, description })
+            })
+            .then(res => res.ok ? render() : alert('Erro ao criar projeto'))
+            .catch(() => alert('Erro ao criar projeto'));
+        }
+
+        function showNewTaskModal(projectId) {
+            document.getElementById('new-task-modal').classList.remove('hidden');
+            document.getElementById('new-task-modal').classList.add('flex');
+        }
+
+        function closeNewTaskModal() {
+            document.getElementById('new-task-modal').classList.add('hidden');
+            document.getElementById('new-task-modal').classList.remove('flex');
+        }
+
+        async function handleNewTask(e, projectId) {
+            e.preventDefault();
+            
+            const title = document.getElementById('task-title').value;
+            const description = document.getElementById('task-description').value;
+            const assigned_to = document.getElementById('task-agent').value || null;
+            const priority = document.getElementById('task-priority').value;
+            
+            try {
+                const res = await fetch(`${API_URL}/api/projects/${projectId}/tasks`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
+                    body: JSON.stringify({ title, description, assigned_to, priority })
+                });
+                
+                if (res.ok) {
+                    closeNewTaskModal();
+                    render();
+                } else {
+                    alert('Erro ao criar tarefa');
+                }
+            } catch (err) {
+                alert('Erro ao criar tarefa');
+            }
+        }
+
+        function logout() {
+            token = null;
+            currentUser = null;
+            localStorage.removeItem('hypertask_token');
+            window.location.hash = '#/';
+            render();
+        }
+
+        // Init
+        window.addEventListener('hashchange', render);
+        render();
+    </script>
+</body>
+</html>
