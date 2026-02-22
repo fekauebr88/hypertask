@@ -117,4 +117,4 @@ async def respond_to_hypertask(task_id, response_data):
 
 if __name__ == "__main__":
     log("🚀 Iniciando agente Rei na porta 18798")
-    uvicorn.run(app, host="0.0.0.0", port=18798)
+    uvicorn.run(app, host="0.0.0.0", port=18810)

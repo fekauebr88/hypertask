@@ -98,4 +98,4 @@ async def respond_to_hypertask(task_id, response_data):
 
 if __name__ == "__main__":
     log("🚀 Iniciando Gardenia na porta 18800")
-    uvicorn.run(app, host="0.0.0.0", port=18800)
+    uvicorn.run(app, host="0.0.0.0", port=18812)
