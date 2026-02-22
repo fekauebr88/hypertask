@@ -4,17 +4,71 @@ const sqlite3 = require('sqlite3').verbose();
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
+const multer = require('multer');
+const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3002;
 
+// File upload configuration
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, uploadsDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueName = `${uuidv4()}${path.extname(file.originalname)}`;
+    cb(null, uniqueName);
+  }
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    const allowedMimes = [
+      'image/jpeg', 'image/png', 'image/gif', 'image/webp',
+      'application/pdf', 'text/plain', 'text/markdown',
+      'application/json', 'application/javascript',
+      'text/html', 'text/css', 'application/zip'
+    ];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Tipo de arquivo não permitido'), false);
+    }
+  }
+});
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+app.use('/uploads', express.static(uploadsDir));
 
 // Database setup
 const db = new sqlite3.Database('./hypertask.db');
+
+// Promisify db methods
+const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
+  db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
+});
+
+const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
+  db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
+});
+
+const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
+  db.run(sql, params, function(err) {
+    err ? reject(err) : resolve({ id: this.lastID, changes: this.changes });
+  });
+});
 
 // Initialize database
 db.serialize(() => {
@@ -83,6 +137,21 @@ db.serialize(() => {
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
 
+  // Attachments table for file uploads
+  db.run(`CREATE TABLE IF NOT EXISTS attachments (
+    id TEXT PRIMARY KEY,
+    comment_id TEXT,
+    filename TEXT NOT NULL,
+    original_name TEXT,
+    mime_type TEXT,
+    size_bytes INTEGER,
+    storage_path TEXT,
+    url TEXT,
+    uploaded_by TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE
+  )`);
+
   // Insert default admin
   const adminId = crypto.randomUUID();
   const adminHash = bcrypt.hashSync('admin123', 10);
@@ -92,9 +161,9 @@ db.serialize(() => {
 
   // Insert default agents
   const agents = [
-    ['rei', 'Rei', '@rei', '🧊', 'backend,infra,arquitetura,devops', 'http://100.112.114.65:18796/webhook/hypertask'],
-    ['jurandir', 'Jurandir', '@jurandir', '⚖️', 'security,hardening,audit,compliance', 'http://100.112.114.65:18792/webhook/hypertask'],
-    ['gardenia', 'Gardenia', '@gardenia', '🌺', 'frontend,ui,design,ux', 'http://100.112.114.65:18794/webhook/hypertask']
+    ['rei', 'Rei', '@rei', '🧊', 'backend,infra,arquitetura,devops', 'http://100.112.114.65:18810/webhook/hypertask'],
+    ['jurandir', 'Jurandir', '@jurandir', '⚖️', 'security,hardening,audit,compliance', 'http://100.112.114.65:18811/webhook/hypertask'],
+    ['gardenia', 'Gardenia', '@gardenia', '🌺', 'frontend,ui,design,ux', 'http://100.112.114.65:18812/webhook/hypertask']
   ];
 
   agents.forEach(([id, name, handle, emoji, skills, endpoint]) => {
@@ -111,21 +180,6 @@ db.serialize(() => {
           [projectId, adminId]);
 
   console.log('✅ Database initialized');
-});
-
-// Promisify db methods
-const dbAll = (sql, params = []) => new Promise((resolve, reject) => {
-  db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows));
-});
-
-const dbGet = (sql, params = []) => new Promise((resolve, reject) => {
-  db.get(sql, params, (err, row) => err ? reject(err) : resolve(row));
-});
-
-const dbRun = (sql, params = []) => new Promise((resolve, reject) => {
-  db.run(sql, params, function(err) {
-    err ? reject(err) : resolve({ id: this.lastID, changes: this.changes });
-  });
 });
 
 // Health check
@@ -153,7 +207,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// Agent auth middleware
+// Agent auth middleware (API Key)
 const authenticateAgent = async (req, res, next) => {
   const apiKey = req.headers['authorization']?.replace('Bearer ', '');
   if (!apiKey) return res.status(401).json({ error: 'API Key required' });
@@ -266,7 +320,6 @@ app.post('/api/projects/:projectId/tasks', authenticateToken, async (req, res) =
     
     const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
     
-    // Send webhook if assigned
     if (assigned_to) {
       const agent = await dbGet('SELECT * FROM agents WHERE id = ?', [assigned_to]);
       if (agent && agent.endpoint_url) {
@@ -289,17 +342,15 @@ app.post('/api/projects/:projectId/tasks', authenticateToken, async (req, res) =
   }
 });
 
-// Update task (humans)
+// Update task
 app.put('/api/tasks/:taskId', authenticateToken, async (req, res) => {
   const { title, description, assigned_to, priority, status } = req.body;
   const taskId = req.params.taskId;
   
   try {
-    // Get current task
     const currentTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [taskId]);
     if (!currentTask) return res.status(404).json({ error: 'Task not found' });
     
-    // Build update query dynamically
     const updates = [];
     const params = [];
     
@@ -313,12 +364,8 @@ app.put('/api/tasks/:taskId', authenticateToken, async (req, res) => {
     
     params.push(taskId);
     
-    await dbRun(
-      `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`,
-      params
-    );
+    await dbRun(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`, params);
     
-    // If assigned_to changed, send webhook to new agent
     if (assigned_to !== undefined && assigned_to !== currentTask.assigned_to) {
       const agent = await dbGet('SELECT * FROM agents WHERE id = ?', [assigned_to]);
       if (agent && agent.endpoint_url) {
@@ -343,27 +390,7 @@ app.put('/api/tasks/:taskId', authenticateToken, async (req, res) => {
   }
 });
 
-// Update task status (agents only to 'respondido')
-app.put('/api/tasks/:taskId/status', authenticateAgent, async (req, res) => {
-  const { status } = req.body;
-  const allowed = ['nao_iniciada', 'na_fila', 'respondido', 'finalizada'];
-  
-  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
-  if (status !== 'respondido') return res.status(403).json({ error: 'Agents can only set respondido' });
-  
-  try {
-    await dbRun(
-      'UPDATE tasks SET status = ?, responded_at = ? WHERE id = ?',
-      [status, new Date().toISOString(), req.params.taskId]
-    );
-    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [req.params.taskId]);
-    res.json(task);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to update status' });
-  }
-});
-
-// Get comments for a task (humans or agents)
+// Get comments for a task
 app.get('/api/tasks/:taskId/comments', authenticateToken, async (req, res) => {
   try {
     const comments = await dbAll(
@@ -398,7 +425,6 @@ async function checkAndNotifyMentions(taskId, content) {
     try {
       const agent = await dbGet('SELECT * FROM agents WHERE LOWER(handle) = ?', [handle]);
       if (agent && agent.endpoint_url) {
-        // Get task info for the webhook
         const task = await dbGet('SELECT t.*, p.slug as project_slug FROM tasks t JOIN projects p ON t.project_id = p.id WHERE t.id = ?', [taskId]);
         if (task) {
           fetch(agent.endpoint_url, {
@@ -431,7 +457,6 @@ app.post('/api/tasks/:taskId/comments', authenticateToken, async (req, res) => {
     );
     const comment = await dbGet('SELECT * FROM comments WHERE id = ?', [id]);
     
-    // Check for @mentions and notify agents
     checkAndNotifyMentions(req.params.taskId, content);
     
     res.status(201).json({ ...comment, attachments: comment.attachments ? JSON.parse(comment.attachments) : [] });
@@ -455,6 +480,26 @@ app.post('/api/agents/tasks/:taskId/comments', authenticateAgent, async (req, re
     res.status(201).json({ ...comment, attachments: comment.attachments ? JSON.parse(comment.attachments) : [] });
   } catch (err) {
     res.status(500).json({ error: 'Failed to add comment' });
+  }
+});
+
+// Update task status (agents only to 'respondido')
+app.put('/api/tasks/:taskId/status', authenticateAgent, async (req, res) => {
+  const { status } = req.body;
+  const allowed = ['nao_iniciada', 'na_fila', 'respondido', 'finalizada'];
+  
+  if (!allowed.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  if (status !== 'respondido') return res.status(403).json({ error: 'Agents can only set respondido' });
+  
+  try {
+    await dbRun(
+      'UPDATE tasks SET status = ?, responded_at = ? WHERE id = ?',
+      [status, new Date().toISOString(), req.params.taskId]
+    );
+    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [req.params.taskId]);
+    res.json(task);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update status' });
   }
 });
 
@@ -488,8 +533,110 @@ app.post('/api/agents', authenticateToken, async (req, res) => {
   }
 });
 
+// File Upload Endpoints
+
+// Upload file
+app.post('/api/upload', authenticateToken, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+    
+    const fileData = {
+      id: crypto.randomUUID(),
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      url: `/uploads/${req.file.filename}`,
+      uploadedBy: req.user.id,
+      createdAt: new Date().toISOString()
+    };
+    
+    res.status(201).json(fileData);
+  } catch (err) {
+    console.error('Upload error:', err);
+    res.status(500).json({ error: 'Failed to upload file' });
+  }
+});
+
+// Delete uploaded file
+app.delete('/api/upload/:filename', authenticateToken, async (req, res) => {
+  try {
+    const filename = req.params.filename;
+    const filepath = path.join(uploadsDir, filename);
+    
+    if (fs.existsSync(filepath)) {
+      fs.unlinkSync(filepath);
+      res.json({ deleted: true });
+    } else {
+      res.status(404).json({ error: 'File not found' });
+    }
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete file' });
+  }
+});
+
+// Search endpoint
+app.get('/api/search', authenticateToken, async (req, res) => {
+  const { q, status, assigned_to, priority, project_id } = req.query;
+  
+  try {
+    let query = `
+      SELECT DISTINCT t.*, p.name as project_name, p.slug as project_slug,
+        a.name as assigned_name, a.handle as assigned_handle, a.emoji as assigned_emoji
+      FROM tasks t
+      JOIN projects p ON t.project_id = p.id
+      LEFT JOIN agents a ON t.assigned_to = a.id
+      LEFT JOIN comments c ON c.task_id = t.id
+      WHERE 1=1
+    `;
+    const params = [];
+    
+    if (q) {
+      query += ` AND (
+        t.title LIKE ? OR 
+        t.description LIKE ? OR 
+        t.identifier LIKE ? OR
+        c.content LIKE ?
+      )`;
+      const searchTerm = `%${q}%`;
+      params.push(searchTerm, searchTerm, searchTerm, searchTerm);
+    }
+    
+    if (status) {
+      query += ` AND t.status = ?`;
+      params.push(status);
+    }
+    
+    if (assigned_to) {
+      query += ` AND t.assigned_to = ?`;
+      params.push(assigned_to);
+    }
+    
+    if (priority) {
+      query += ` AND t.priority = ?`;
+      params.push(priority);
+    }
+    
+    if (project_id) {
+      query += ` AND t.project_id = ?`;
+      params.push(project_id);
+    }
+    
+    query += ` ORDER BY t.created_at DESC`;
+    
+    const tasks = await dbAll(query, params);
+    res.json(tasks);
+  } catch (err) {
+    console.error('Search error:', err);
+    res.status(500).json({ error: 'Search failed' });
+  }
+});
+
 // Start
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 HyperTask API running on http://0.0.0.0:${PORT}`);
   console.log(`📊 Health: http://0.0.0.0:${PORT}/health`);
+  console.log(`📁 Uploads: http://0.0.0.0:${PORT}/uploads`);
 });
