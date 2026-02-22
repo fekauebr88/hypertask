@@ -5,6 +5,151 @@ Sistema de Gestão de Tarefas com AI/Human Assignment completo, rodando em produ
 
 ---
 
+## 🏗️ ARQUITETURA DO SISTEMA (Conforme Requisitos)
+
+### 1. Cadastro de OpenClaws
+| Requisito | Implementação | Status |
+|-----------|---------------|--------|
+| Local para cadastrar OpenClaws | Tabela `agents` no banco | ✅ |
+| Geração automática de API Key | `api_key` gerada no cadastro | ✅ |
+| Formato: `ht_live_{handle}_{random}` | Implementado | ✅ |
+| API Key única por agente | Constraint UNIQUE | ✅ |
+
+**Endpoint:** `POST /api/agents` (admin only)
+**Exemplo de API Key gerada:** `ht_live_rei_4c4c4e0ec8ae0de2841a4711e204ac47`
+
+### 2. Registro do OpenClaw
+O OpenClaw (Agente) deve ser cadastrado com:
+- **Nome:** Identificação humana (ex: "Rei")
+- **Handle:** @ único (ex: "@rei")
+- **API Key:** Gerada pelo HyperTask
+- **Endpoint URL:** Webhook para receber tarefas (ex: `http://100.112.114.65:18810/webhook/hypertask`)
+- **Skills:** Array de especialidades
+
+**O OpenClaw usa a API Key para:**
+- Autenticar no HyperTask
+- Postar comentários em tarefas
+- Atualizar status para "Respondido"
+- Anexar arquivos (quando implementado)
+
+### 3. Fluxo de Execução de Tarefa
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. CADASTRAR OPENCLAW                                      │
+│     Admin cria agente no HyperTask                          │
+│     ↓ Gera API Key                                          │
+│     API Key: ht_live_rei_xxxxx                              │
+│     Endpoint: http://.../webhook/hypertask                  │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│  2. CONFIGURAR OPENCLAW                                     │
+│     OpenClaw salva API Key em variável de ambiente          │
+│     Aguarda webhooks no endpoint configurado                │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│  3. CRIAR TAREFA                                            │
+│     Usuário cria tarefa e atribui para @rei                 │
+│     Status: "Não Iniciada" → "Na Fila"                      │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ Webhook POST /webhook/hypertask
+┌──────────────────────▼──────────────────────────────────────┐
+│  4. OPENCLAW RECEBE                                         │
+│     Evento: task.assigned                                   │
+│     Payload: {task, agent, event}                           │
+│     OpenClaw valida API Key e processa                      │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│  5. OPENCLAW EXECUTA                                        │
+│     Analisa tarefa                                          │
+│     Executa trabalho solicitado                             │
+│     Preenche informações nos comentários                    │
+│     Anexa arquivos se necessário (opcional)                 │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ POST /api/agents/tasks/:id/comments
+                       │ PUT /api/tasks/:id/status
+┌──────────────────────▼──────────────────────────────────────┐
+│  6. HYPERTASK ATUALIZA                                      │
+│     Comentário adicionado pelo agente                       │
+│     Status muda para "Respondido"                           │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────▼──────────────────────────────────────┐
+│  7. VALIDAÇÃO HUMANA                                        │
+│     Usuário revisa resposta do agente                       │
+│     Aprova → Status: "Finalizada"                           │
+│     Ou solicita ajustes → Status: "Na Fila"                 │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 4. Status do Workflow
+
+| Status | Descrição | Quem altera |
+|--------|-----------|-------------|
+| **Não Iniciada** | Tarefa em elaboração, sem atribuição | Humano |
+| **Na Fila** | Enviada para OpenClaw executar | Sistema (ao atribuir) |
+| **Respondido** | OpenClaw respondeu com comentário | OpenClaw (via API) |
+| **Finalizada** | Aprovada após validação | Humano |
+
+**Transições:**
+- `Não Iniciada` → `Na Fila`: Quando atribui para OpenClaw
+- `Na Fila` → `Respondido`: Quando OpenClaw responde
+- `Respondido` → `Finalizada`: Quando humano aprova
+- `Respondido` → `Na Fila`: Quando humano solicita ajustes
+
+### 5. Estrutura de Dados
+
+#### Relacionamentos
+```
+Project (1) ───────< (N) Task
+                        │
+                        │ (N)
+                        ▼
+                   Comment (1) ───< (N) Comment (threading)
+```
+
+**Regras:**
+- Toda Task pertence a um Project
+- Todo Comment pertence a uma Task
+- Comments podem ter respostas (parent_id)
+- Task pode ter 0 ou N Comments
+- Task pode ser atribuída a 0 ou 1 Agent
+
+### 6. Comentários e Anexos
+
+**Comentários:**
+- Sempre associados a uma Task
+- Podem ter respostas (threading via parent_id)
+- Author pode ser `human` ou `agent`
+- Content: Texto do comentário
+- Attachments: Array de arquivos (JSON)
+
+**Anexos (quando implementado):**
+- Upload via `POST /api/upload`
+- Armazenado em `/uploads/`
+- URL acessível: `/uploads/{filename}`
+- Tipos permitidos: imagens, PDF, textos, código
+
+### 7. @Mention Detection
+
+**Funcionamento:**
+1. Usuário comenta: "@rei preciso de ajuda"
+2. Sistema detecta `@rei` via regex
+3. Busca agente com handle `@rei`
+4. Dispara webhook: `event: comment.mention`
+5. Agente recebe e pode responder
+
+**Webhooks Enviados:**
+- `task.assigned`: Nova tarefa atribuída
+- `comment.mention`: Usuário mencionou agente
+
+---
+
+---
+
 ## ✅ CORE FEATURES
 
 ### 1. Autenticação & Usuários
