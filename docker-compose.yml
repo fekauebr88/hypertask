@@ -1,0 +1,97 @@
+version: '3.8'
+
+services:
+  # API Backend
+  api:
+    build: ./api
+    container_name: hypertask-api
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://hypertask:hypertask_pass@postgres:5432/hypertask
+      - REDIS_URL=redis://redis:6379
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - JWT_SECRET=${JWT_SECRET:-your-secret-key-change-in-production}
+      - PORT=3000
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    volumes:
+      - ./api:/app
+      - /app/node_modules
+    restart: unless-stopped
+    networks:
+      - hypertask-network
+
+  # Frontend Web
+  web:
+    build: ./web
+    container_name: hypertask-web
+    ports:
+      - "8085:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:3002
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - hypertask-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: hypertask-postgres
+    environment:
+      - POSTGRES_USER=hypertask
+      - POSTGRES_PASSWORD=hypertask_pass
+      - POSTGRES_DB=hypertask
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - hypertask-network
+
+  # Redis Cache & Queue
+  redis:
+    image: redis:7-alpine
+    container_name: hypertask-redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - hypertask-network
+
+  # MinIO File Storage
+  minio:
+    image: minio/minio:latest
+    container_name: hypertask-minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    restart: unless-stopped
+    networks:
+      - hypertask-network
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+
+networks:
+  hypertask-network:
+    driver: bridge
